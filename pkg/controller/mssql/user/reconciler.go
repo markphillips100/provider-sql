@@ -151,9 +151,23 @@ func (c *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 		return managed.ExternalObservation{}, errors.New(errNotUser)
 	}
 
-	var name string
+	userType := v1alpha1.UserTypeLocal
+	if cr.Spec.ForProvider.Type != nil {
+		userType = *cr.Spec.ForProvider.Type
+	}
 
-	query := "SELECT name FROM sys.database_principals WHERE type = 'S' AND name = @p1"
+	var query string
+
+	switch userType {
+	case v1alpha1.UserTypeAD:
+		query = "SELECT name FROM sys.database_principals WHERE type IN ('E','X') AND name = @p1"
+	case v1alpha1.UserTypeLocal:
+		query = "SELECT name FROM sys.database_principals WHERE type = 'S' AND name = @p1"
+	default:
+		return managed.ExternalObservation{}, errors.Errorf("Type '%s' is not valid", *cr.Spec.ForProvider.Type)
+	}
+
+	var name string
 	err := c.userDB.Scan(ctx, xsql.Query{
 		String: query, Parameters: []interface{}{
 			meta.GetExternalName(cr),
@@ -185,6 +199,35 @@ func (c *external) Create(ctx context.Context, mg resource.Managed) (managed.Ext
 		return managed.ExternalCreation{}, errors.New(errNotUser)
 	}
 
+	userType := v1alpha1.UserTypeLocal
+	if cr.Spec.ForProvider.Type != nil {
+		userType = *cr.Spec.ForProvider.Type
+	}
+
+	switch userType {
+	case v1alpha1.UserTypeAD:
+		return c.createADUser(ctx, cr)
+	case v1alpha1.UserTypeLocal:
+		return c.createLocalUser(ctx, cr)
+	default:
+		return managed.ExternalCreation{}, errors.Errorf("Type '%s' is not valid", *cr.Spec.ForProvider.Type)
+	}
+}
+
+func (c *external) createADUser(ctx context.Context, cr *v1alpha1.User) (managed.ExternalCreation, error) {
+	externalProviderUserQuery := fmt.Sprintf("CREATE USER %s FROM EXTERNAL PROVIDER", mssql.QuoteIdentifier(meta.GetExternalName(cr)))
+	if err := c.userDB.Exec(ctx, xsql.Query{
+		String: externalProviderUserQuery,
+	}); err != nil {
+		return managed.ExternalCreation{}, errors.Wrap(err, errCreateUser)
+	}
+
+	return managed.ExternalCreation{
+		ConnectionDetails: c.userDB.GetConnectionDetails(meta.GetExternalName(cr), ""),
+	}, nil
+}
+
+func (c *external) createLocalUser(ctx context.Context, cr *v1alpha1.User) (managed.ExternalCreation, error) {
 	pw, _, err := c.getPassword(ctx, cr)
 	if err != nil {
 		return managed.ExternalCreation{}, err
@@ -221,22 +264,24 @@ func (c *external) Update(ctx context.Context, mg resource.Managed) (managed.Ext
 		return managed.ExternalUpdate{}, errors.New(errNotUser)
 	}
 
-	pw, changed, err := c.getPassword(ctx, cr)
-	if err != nil {
-		return managed.ExternalUpdate{}, err
-	}
-
-	if changed {
-		query := fmt.Sprintf("ALTER LOGIN %s WITH PASSWORD=%s", mssql.QuoteIdentifier(meta.GetExternalName(cr)), mssql.QuoteValue(pw))
-		if err := c.loginDB.Exec(ctx, xsql.Query{
-			String: query,
-		}); err != nil {
-			return managed.ExternalUpdate{}, errors.Wrap(err, errUpdateUser)
+	if t := cr.Spec.ForProvider.Type; t == nil || *t == v1alpha1.UserTypeLocal {
+		pw, changed, err := c.getPassword(ctx, cr)
+		if err != nil {
+			return managed.ExternalUpdate{}, err
 		}
 
-		return managed.ExternalUpdate{
-			ConnectionDetails: c.userDB.GetConnectionDetails(meta.GetExternalName(cr), pw),
-		}, nil
+		if changed {
+			query := fmt.Sprintf("ALTER LOGIN %s WITH PASSWORD=%s", mssql.QuoteIdentifier(meta.GetExternalName(cr)), mssql.QuoteValue(pw))
+			if err := c.loginDB.Exec(ctx, xsql.Query{
+				String: query,
+			}); err != nil {
+				return managed.ExternalUpdate{}, errors.Wrap(err, errUpdateUser)
+			}
+
+			return managed.ExternalUpdate{
+				ConnectionDetails: c.userDB.GetConnectionDetails(meta.GetExternalName(cr), pw),
+			}, nil
+		}
 	}
 	return managed.ExternalUpdate{}, nil
 }

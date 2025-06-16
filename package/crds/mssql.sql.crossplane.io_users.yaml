@@ -253,6 +253,10 @@ spec:
                     - name
                     - namespace
                     type: object
+                  type:
+                    description: The type of user to create.  Defaults to Local.  Can
+                      be either Local or AD.
+                    type: string
                 type: object
               managementPolicies:
                 default:

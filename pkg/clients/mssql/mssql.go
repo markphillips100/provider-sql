@@ -25,8 +25,8 @@ import (
 
 	"github.com/pkg/errors"
 
-	xpv1 "github.com/crossplane/crossplane-runtime/apis/common/v1"
-	"github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
+	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/reconciler/managed"
 
 	"github.com/crossplane-contrib/provider-sql/pkg/clients/xsql"
 )
@@ -141,6 +141,13 @@ func (c mssqlDB) GetConnectionDetails(username, password string) managed.Connect
 		xpv1.ResourceCredentialsSecretEndpointKey: []byte(c.endpoint),
 		xpv1.ResourceCredentialsSecretPortKey:     []byte(c.port),
 	}
+}
+
+// GetServerVersion is not supported by the MSSQL client (only used by PostgreSQL).
+func (c mssqlDB) GetServerVersion(ctx context.Context) (int, error) {
+	// This method should never be called for MSSQL clients
+	// but is implemented to satisfy the xsql.DB interface
+	return 0, nil
 }
 
 // QuoteIdentifier for mssql queries

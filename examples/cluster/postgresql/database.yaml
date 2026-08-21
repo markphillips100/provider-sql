@@ -1,0 +1,35 @@
+apiVersion: postgresql.sql.crossplane.io/v1alpha1
+kind: Database
+metadata:
+  name: example
+spec:
+  forProvider: {}
+---
+apiVersion: postgresql.sql.crossplane.io/v1alpha1
+kind: Database
+metadata:
+  name: db1
+spec:
+  deletionPolicy: Orphan
+  forProvider:
+    allowConnections: true
+    owner: "ownerrole"
+---
+apiVersion: postgresql.sql.crossplane.io/v1alpha1
+kind: Database
+metadata:
+  name: db-owner-ref
+spec:
+  forProvider:
+    ownerSelector:
+      matchLabels:
+        role: owner
+---
+apiVersion: postgresql.sql.crossplane.io/v1alpha1
+kind: Database
+metadata:
+  name: db-observe
+spec:
+  managementPolicies:
+  - Observe
+  forProvider: {}

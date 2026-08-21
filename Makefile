@@ -23,19 +23,19 @@ NPROCS ?= 1
 # to half the number of CPU cores.
 GO_TEST_PARALLEL := $(shell echo $$(( $(NPROCS) / 2 )))
 
-GOLANGCILINT_VERSION ?= 2.1.2
+GOLANGCILINT_VERSION ?= 2.10.1
 GO_STATIC_PACKAGES = $(GO_PROJECT)/cmd/provider
 GO_LDFLAGS += -X $(GO_PROJECT)/pkg/version.Version=$(VERSION)
-GO_SUBDIRS += cmd pkg apis
+GO_SUBDIRS += generate cmd pkg apis
 GO111MODULE = on
 -include build/makelib/golang.mk
 
 # ====================================================================================
 # Setup Kubernetes tools
-KIND_NODE_IMAGE_TAG ?= v1.30.13
-KIND_VERSION ?= v0.29.0
-KUBECTL_VERSION ?= v1.30.13
-CROSSPLANE_CLI_VERSION ?= v1.20.0
+KIND_NODE_IMAGE_TAG ?= v1.35.1
+KIND_VERSION ?= v0.31.0
+KUBECTL_VERSION ?= v1.35.1
+CROSSPLANE_CLI_VERSION ?= v2.2.1
 -include build/makelib/k8s_tools.mk
 
 # ====================================================================================
@@ -53,6 +53,7 @@ XPKG_REG_ORGS ?= xpkg.upbound.io/crossplane-contrib
 XPKG_REG_ORGS_NO_PROMOTE ?= xpkg.upbound.io/crossplane-contrib
 XPKGS = provider-sql
 -include build/makelib/xpkg.mk
+-include build/makelib/local.xpkg.mk
 
 # NOTE(hasheddan): we force image building to happen prior to xpkg build so that
 # we ensure image is present in daemon.
@@ -83,10 +84,18 @@ generate: crds.clean
 # integration tests
 e2e.run: test-integration
 
+CROSSPLANE_HELM_CHANNEL ?= stable
+CROSSPLANE_HELM_CHART_VERSION ?=
+POSTGRES_VERSION ?= 18
+
 # Run integration tests.
-test-integration: $(KIND) $(KUBECTL) $(UP) $(HELM)
+test-integration: $(KIND) $(KUBECTL) $(CROSSPLANE_CLI) $(HELM)
 	@$(INFO) running integration tests using kind $(KIND_VERSION)
-	@KIND_NODE_IMAGE_TAG=${KIND_NODE_IMAGE_TAG} $(ROOT_DIR)/cluster/local/integration_tests.sh || $(FAIL)
+	@KIND_NODE_IMAGE_TAG=${KIND_NODE_IMAGE_TAG} \
+	  CROSSPLANE_HELM_CHANNEL=${CROSSPLANE_HELM_CHANNEL} \
+	  CROSSPLANE_HELM_CHART_VERSION=${CROSSPLANE_HELM_CHART_VERSION} \
+	  POSTGRES_VERSION=${POSTGRES_VERSION} \
+	  $(ROOT_DIR)/cluster/local/integration_tests.sh || $(FAIL)
 	@$(OK) integration tests passed
 
 # Update the submodules, such as the common build scripts.
@@ -103,10 +112,13 @@ submodules:
 go.cachedir:
 	@go env GOCACHE
 
+go.mod.cachedir:
+	@go env GOMODCACHE
+
 # NOTE(hasheddan): we must ensure up is installed in tool cache prior to build
-# as including the k8s_tools machinery prior to the xpkg machinery sets UP to
+# as including the k8s_tools machinery prior to the xpkg machinery sets CROSSPLANE_CLI to
 # point to tool cache.
-build.init: $(UP)
+build.init: $(CROSSPLANE_CLI)
 
 # This is for running out-of-cluster locally, and is for convenience. Running
 # this make target will print out the command which was used. For more control,
@@ -131,7 +143,7 @@ dev-clean: $(KIND) $(KUBECTL)
 	@$(INFO) Deleting kind cluster
 	@$(KIND) delete cluster --name=$(PROJECT_NAME)-dev
 
-.PHONY: submodules fallthrough test-integration run crds.clean dev dev-clean
+.PHONY: submodules fallthrough test-integration run crds.clean dev dev-clean go.mod.cachedir go.cachedir
 
 # ====================================================================================
 # Special Targets
@@ -152,3 +164,48 @@ crossplane.help:
 help-special: crossplane.help
 
 .PHONY: crossplane.help help-special
+
+# ====================================================================================
+# Package Extensions (README, SBOM)
+
+EXTENSIONS_DIR := $(ROOT_DIR)/extensions
+SYFT_VERSION ?= 1.48.0
+SYFT := $(TOOLS_HOST_DIR)/syft-$(SYFT_VERSION)
+UP_VERSION ?= v0.49.1
+UP_CHANNEL ?= stable
+UP := $(TOOLS_HOST_DIR)/up-$(UP_VERSION)
+
+$(SYFT):
+	@$(INFO) installing syft $(SYFT_VERSION)
+	@mkdir -p $(TOOLS_HOST_DIR)
+	@curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b $(TOOLS_HOST_DIR) v$(SYFT_VERSION) || $(FAIL)
+	@mv $(TOOLS_HOST_DIR)/syft $(SYFT)
+	@$(OK) installing syft $(SYFT_VERSION)
+
+$(UP):
+	@$(INFO) installing up $(UP_VERSION)
+	@mkdir -p $(TOOLS_HOST_DIR)
+	@curl -fsSLo $(UP) https://cli.upbound.io/$(UP_CHANNEL)/$(UP_VERSION)/bin/$(SAFEHOST_PLATFORM)/up || $(FAIL)
+	@chmod +x $(UP)
+	@$(OK) installing up $(UP_VERSION)
+
+sbom: $(SYFT)
+	@$(INFO) Generating SPDX SBOM
+	@mkdir -p $(EXTENSIONS_DIR)/sbom
+	@$(SYFT) scan dir:. --source-name $(PROJECT_NAME) --source-version $(VERSION) -o spdx-json=$(EXTENSIONS_DIR)/sbom/sbom.spdx.json
+	@$(OK) SBOM generated at $(EXTENSIONS_DIR)/sbom/sbom.spdx.json
+
+xpkg.extensions: sbom
+	@$(INFO) Preparing package extensions
+	@mkdir -p $(EXTENSIONS_DIR)/icons
+	@mkdir -p $(EXTENSIONS_DIR)/readme
+	@cp $(ROOT_DIR)/icon.svg $(EXTENSIONS_DIR)/icons/icon.svg
+	@cp $(ROOT_DIR)/README.md $(EXTENSIONS_DIR)/readme/readme.md
+	@$(OK) Package extensions prepared at $(EXTENSIONS_DIR)
+
+xpkg.append: xpkg.extensions $(UP)
+	@$(INFO) Appending extensions to $(XPKG_REG_ORGS)/$(PROJECT_NAME):$(VERSION)
+	@$(UP) alpha xpkg append --extensions-root=$(EXTENSIONS_DIR) $(XPKG_REG_ORGS)/$(PROJECT_NAME):$(VERSION) || $(FAIL)
+	@$(OK) Appended extensions to $(XPKG_REG_ORGS)/$(PROJECT_NAME):$(VERSION)
+
+.PHONY: sbom xpkg.extensions xpkg.append

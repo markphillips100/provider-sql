@@ -78,7 +78,7 @@ jobs:
           restore-keys: ${{ runner.os }}-pkg-
 
       - name: Download Go Modules
-        run: make modules.download modules.check
+        run: make go.modules.download go.modules.check
 
       # We could run 'make lint' but we prefer this action because it leaves
       # 'annotations' (i.e. it comments on PRs to point out linter violations).
@@ -122,7 +122,7 @@ jobs:
           restore-keys: ${{ runner.os }}-pkg-
 
       - name: Download Go Modules
-        run: make modules.download modules.check
+        run: make go.modules.download go.modules.check
 
       - name: Check Diff
         id: check-diff
@@ -175,7 +175,7 @@ jobs:
           restore-keys: ${{ runner.os }}-pkg-
 
       - name: Download Go Modules
-        run: make modules.download modules.check
+        run: make go.modules.download go.modules.check
 
       - name: Run Unit Tests
         run: make -j2 test
@@ -235,7 +235,7 @@ jobs:
           restore-keys: ${{ runner.os }}-pkg-
 
       - name: Download Go Modules
-        run: make modules.download modules.check
+        run: make go.modules.download go.modules.check
 
       - name: Build Helm Chart
         run: make -j2 build
@@ -303,7 +303,7 @@ jobs:
           restore-keys: ${{ runner.os }}-pkg-
 
       - name: Download Go Modules
-        run: make modules.download modules.check
+        run: make go.modules.download go.modules.check
 
       - name: Build Artifacts
         run: make -j2 build.all

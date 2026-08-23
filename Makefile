@@ -115,10 +115,6 @@ go.cachedir:
 go.mod.cachedir:
 	@go env GOMODCACHE
 
-# NOTE(hasheddan): we must ensure up is installed in tool cache prior to build
-# as including the k8s_tools machinery prior to the xpkg machinery sets CROSSPLANE_CLI to
-# point to tool cache.
-build.init: $(CROSSPLANE_CLI)
 
 # This is for running out-of-cluster locally, and is for convenience. Running
 # this make target will print out the command which was used. For more control,

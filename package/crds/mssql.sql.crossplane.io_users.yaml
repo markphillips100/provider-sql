@@ -71,12 +71,6 @@ spec:
                 description: UserParameters define the desired state of a MSSQL user
                   instance.
                 properties:
-                  contained:
-                    description: |-
-                      Contained specifies whether to create a contained database user (without server-level login).
-                      When true, the user will be created directly in the specified database using CREATE USER WITH PASSWORD.
-                      When false (default), a server-level LOGIN will be created first, then a database user mapped to that login.
-                    type: boolean
                   database:
                     description: Database allows you to specify the name of the Database
                       the USER is created for.
@@ -259,14 +253,23 @@ spec:
                     - name
                     - namespace
                     type: object
+                  type:
+                    description: |-
+                      Type specifies the kind of user to create. Defaults to Local.
+                      - Local: creates a server-level LOGIN and a database USER mapped to that login.
+                      - AD: creates an Azure AD (external provider) database user.
+                      - LocalDb: creates a contained database user directly with a password (no server-level login).
+                    enum:
+                    - Local
+                    - AD
+                    - LocalDb
+                    type: string
                 type: object
                 x-kubernetes-validations:
-                - message: contained users cannot specify loginDatabase, loginDatabaseRef,
+                - message: LocalDb users cannot specify loginDatabase, loginDatabaseRef,
                     or loginDatabaseSelector
-                  rule: '!(has(self.contained) && self.contained == true && (has(self.loginDatabase)
+                  rule: '!(has(self.type) && self.type == ''LocalDb'' && (has(self.loginDatabase)
                     || has(self.loginDatabaseRef) || has(self.loginDatabaseSelector)))'
-                - message: contained field is immutable after creation
-                  rule: '!has(oldSelf.contained) || self.contained == oldSelf.contained'
               managementPolicies:
                 default:
                 - '*'

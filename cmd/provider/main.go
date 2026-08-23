@@ -23,6 +23,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
 	_ "github.com/microsoft/go-mssqldb"
+	_ "github.com/microsoft/go-mssqldb/azuread"
 
 	"github.com/alecthomas/kingpin/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -39,6 +40,9 @@ import (
 
 	"github.com/crossplane-contrib/provider-sql/apis"
 	"github.com/crossplane-contrib/provider-sql/pkg/controller"
+
+	azlog "github.com/Azure/azure-sdk-for-go/sdk/azcore/log"
+	azidentity "github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 )
 
 func main() {
@@ -62,6 +66,14 @@ func main() {
 		// *very* verbose even at info level, so we only provide it a real
 		// logger when we're running in debug mode.
 		ctrl.SetLogger(zl)
+
+		// print log output to stdout
+		azlog.SetListener(func(event azlog.Event, s string) {
+			log.Debug(s)
+		})
+
+		// include only azidentity credential logs
+		azlog.SetEvents(azidentity.EventAuthentication)
 	}
 
 	log.Debug("Starting", "sync-period", syncPeriod.String())

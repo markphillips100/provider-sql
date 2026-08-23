@@ -156,7 +156,21 @@ var _ managed.TypedExternalClient[*v1alpha1.User] = &external{}
 func (c *external) Observe(ctx context.Context, mg *v1alpha1.User) (managed.ExternalObservation, error) {
 	var name string
 
-	query := "SELECT name FROM sys.database_principals WHERE type = 'S' AND name = @p1"
+	// AD users are external principals (type E=external user, X=external group).
+	// Local and LocalDb users are SQL users (type S).
+	userType := v1alpha1.UserTypeLocal
+	if mg.Spec.ForProvider.Type != nil {
+		userType = *mg.Spec.ForProvider.Type
+	}
+
+	var query string
+	switch userType {
+	case v1alpha1.UserTypeAD:
+		query = "SELECT name FROM sys.database_principals WHERE type IN ('E','X') AND name = @p1"
+	default:
+		query = "SELECT name FROM sys.database_principals WHERE type = 'S' AND name = @p1"
+	}
+
 	err := c.userDB.Scan(ctx, xsql.Query{
 		String: query, Parameters: []interface{}{
 			meta.GetExternalName(mg),
@@ -183,6 +197,36 @@ func (c *external) Observe(ctx context.Context, mg *v1alpha1.User) (managed.Exte
 }
 
 func (c *external) Create(ctx context.Context, mg *v1alpha1.User) (managed.ExternalCreation, error) {
+	userType := v1alpha1.UserTypeLocal
+	if mg.Spec.ForProvider.Type != nil {
+		userType = *mg.Spec.ForProvider.Type
+	}
+
+	switch userType {
+	case v1alpha1.UserTypeAD:
+		return c.createADUser(ctx, mg)
+	case v1alpha1.UserTypeLocalDb:
+		return c.createLocalDbUser(ctx, mg)
+	default:
+		return c.createLocalUser(ctx, mg)
+	}
+}
+
+// createADUser creates an Azure AD database user via FROM EXTERNAL PROVIDER.
+// AD users do not have passwords managed by us.
+func (c *external) createADUser(ctx context.Context, mg *v1alpha1.User) (managed.ExternalCreation, error) {
+	query := fmt.Sprintf("CREATE USER %s FROM EXTERNAL PROVIDER", mssql.QuoteIdentifier(meta.GetExternalName(mg)))
+	if err := c.userDB.Exec(ctx, xsql.Query{String: query}); err != nil {
+		return managed.ExternalCreation{}, errors.Wrapf(err, errCreateUser, meta.GetExternalName(mg))
+	}
+	return managed.ExternalCreation{
+		ConnectionDetails: c.userDB.GetConnectionDetails(meta.GetExternalName(mg), ""),
+	}, nil
+}
+
+// createLocalDbUser creates a contained database user with a password directly
+// in the target database (no server-level LOGIN).
+func (c *external) createLocalDbUser(ctx context.Context, mg *v1alpha1.User) (managed.ExternalCreation, error) {
 	pw, _, err := c.getPassword(ctx, mg)
 	if err != nil {
 		return managed.ExternalCreation{}, err
@@ -194,21 +238,32 @@ func (c *external) Create(ctx context.Context, mg *v1alpha1.User) (managed.Exter
 		}
 	}
 
-	// Check if this should be a contained database user
-	if mg.Spec.ForProvider.Contained != nil && *mg.Spec.ForProvider.Contained {
-		// Create contained database user directly without LOGIN
-		userQuery := fmt.Sprintf("CREATE USER %s WITH PASSWORD=%s", mssql.QuoteIdentifier(meta.GetExternalName(mg)), mssql.QuoteValue(pw))
-		if err := c.userDB.Exec(ctx, xsql.Query{
-			String: userQuery,
-		}); err != nil {
-			return managed.ExternalCreation{}, errors.Wrapf(err, errCreateUser, meta.GetExternalName(mg))
-		}
-	} else {
-		if err := c.createLoginAndUser(ctx, mg, pw); err != nil {
+	userQuery := fmt.Sprintf("CREATE USER %s WITH PASSWORD = %s", mssql.QuoteIdentifier(meta.GetExternalName(mg)), mssql.QuoteValue(pw))
+	if err := c.userDB.Exec(ctx, xsql.Query{String: userQuery}); err != nil {
+		return managed.ExternalCreation{}, errors.Wrapf(err, errCreateUser, meta.GetExternalName(mg))
+	}
+	return managed.ExternalCreation{
+		ConnectionDetails: c.userDB.GetConnectionDetails(meta.GetExternalName(mg), pw),
+	}, nil
+}
+
+// createLocalUser creates a traditional server-level LOGIN and a database USER
+// mapped to that login.
+func (c *external) createLocalUser(ctx context.Context, mg *v1alpha1.User) (managed.ExternalCreation, error) {
+	pw, _, err := c.getPassword(ctx, mg)
+	if err != nil {
+		return managed.ExternalCreation{}, err
+	}
+	if pw == "" {
+		pw, err = password.Generate()
+		if err != nil {
 			return managed.ExternalCreation{}, err
 		}
 	}
 
+	if err := c.createLoginAndUser(ctx, mg, pw); err != nil {
+		return managed.ExternalCreation{}, err
+	}
 	return managed.ExternalCreation{
 		ConnectionDetails: c.userDB.GetConnectionDetails(meta.GetExternalName(mg), pw),
 	}, nil
@@ -220,30 +275,36 @@ func (c *external) Update(ctx context.Context, mg *v1alpha1.User) (managed.Exter
 		return managed.ExternalUpdate{}, err
 	}
 
-	if changed {
-		if mg.Spec.ForProvider.Contained != nil && *mg.Spec.ForProvider.Contained {
-			// For contained users, use ALTER USER syntax
-			query := fmt.Sprintf("ALTER USER %s WITH PASSWORD=%s", mssql.QuoteIdentifier(meta.GetExternalName(mg)), mssql.QuoteValue(pw))
-			if err := c.userDB.Exec(ctx, xsql.Query{
-				String: query,
-			}); err != nil {
-				return managed.ExternalUpdate{}, errors.Wrap(err, errUpdateUser)
-			}
-		} else {
-			// For traditional users, use ALTER LOGIN syntax
-			query := fmt.Sprintf("ALTER LOGIN %s WITH PASSWORD=%s", mssql.QuoteIdentifier(meta.GetExternalName(mg)), mssql.QuoteValue(pw))
-			if err := c.loginDB.Exec(ctx, xsql.Query{
-				String: query,
-			}); err != nil {
-				return managed.ExternalUpdate{}, errors.Wrap(err, errUpdateUser)
-			}
-		}
-
-		return managed.ExternalUpdate{
-			ConnectionDetails: c.userDB.GetConnectionDetails(meta.GetExternalName(mg), pw),
-		}, nil
+	if !changed {
+		return managed.ExternalUpdate{}, nil
 	}
-	return managed.ExternalUpdate{}, nil
+
+	userType := v1alpha1.UserTypeLocal
+	if mg.Spec.ForProvider.Type != nil {
+		userType = *mg.Spec.ForProvider.Type
+	}
+
+	switch userType {
+	case v1alpha1.UserTypeAD:
+		// AD users are managed externally; no password to update.
+		return managed.ExternalUpdate{}, nil
+	case v1alpha1.UserTypeLocalDb:
+		// For contained users, use ALTER USER ... WITH PASSWORD syntax.
+		query := fmt.Sprintf("ALTER USER %s WITH PASSWORD = %s", mssql.QuoteIdentifier(meta.GetExternalName(mg)), mssql.QuoteValue(pw))
+		if err := c.userDB.Exec(ctx, xsql.Query{String: query}); err != nil {
+			return managed.ExternalUpdate{}, errors.Wrap(err, errUpdateUser)
+		}
+	default:
+		// For traditional users, update the server-level LOGIN password.
+		query := fmt.Sprintf("ALTER LOGIN %s WITH PASSWORD = %s", mssql.QuoteIdentifier(meta.GetExternalName(mg)), mssql.QuoteValue(pw))
+		if err := c.loginDB.Exec(ctx, xsql.Query{String: query}); err != nil {
+			return managed.ExternalUpdate{}, errors.Wrap(err, errUpdateUser)
+		}
+	}
+
+	return managed.ExternalUpdate{
+		ConnectionDetails: c.userDB.GetConnectionDetails(meta.GetExternalName(mg), pw),
+	}, nil
 }
 
 func (c *external) Disconnect(ctx context.Context) error {
@@ -315,10 +376,14 @@ func (c *external) killLoginSessions(ctx context.Context, loginName string) erro
 }
 
 func (c *external) Delete(ctx context.Context, mg *v1alpha1.User) (managed.ExternalDelete, error) {
-	isContained := mg.Spec.ForProvider.Contained != nil && *mg.Spec.ForProvider.Contained
+	userType := v1alpha1.UserTypeLocal
+	if mg.Spec.ForProvider.Type != nil {
+		userType = *mg.Spec.ForProvider.Type
+	}
+	isLocal := userType == v1alpha1.UserTypeLocal
 
-	// Only kill sessions for traditional users with logins, not contained users
-	if !isContained {
+	// Kill active sessions only for traditional users with server-level logins.
+	if isLocal {
 		if err := c.killLoginSessions(ctx, meta.GetExternalName(mg)); err != nil {
 			return managed.ExternalDelete{}, err
 		}
@@ -330,10 +395,11 @@ func (c *external) Delete(ctx context.Context, mg *v1alpha1.User) (managed.Exter
 		return managed.ExternalDelete{}, errors.Wrapf(err, errDropUser, meta.GetExternalName(mg))
 	}
 
-	// Only drop LOGIN if this is not a contained user, and only when it still
-	// exists. A shared login may already have been dropped by a sibling User
-	// (or orphaned on purpose), so guard the DROP to keep Delete idempotent.
-	if !isContained {
+	// Drop the server-level LOGIN only for traditional users. A shared login may
+	// already have been dropped by a sibling User (or orphaned on purpose), so
+	// guard the DROP to keep Delete idempotent. AD and LocalDb users have no
+	// server-level login to drop.
+	if isLocal {
 		exists, err := c.loginExists(ctx, meta.GetExternalName(mg))
 		if err != nil {
 			return managed.ExternalDelete{}, errors.Wrapf(err, errSelectLogin, meta.GetExternalName(mg))

@@ -571,9 +571,9 @@ func (in *UserParameters) DeepCopyInto(out *UserParameters) {
 		*out = new(v1.Selector)
 		(*in).DeepCopyInto(*out)
 	}
-	if in.Contained != nil {
-		in, out := &in.Contained, &out.Contained
-		*out = new(bool)
+	if in.Type != nil {
+		in, out := &in.Type, &out.Type
+		*out = new(string)
 		**out = **in
 	}
 }

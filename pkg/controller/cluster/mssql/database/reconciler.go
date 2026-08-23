@@ -111,7 +111,7 @@ func (c *connector) Connect(ctx context.Context, mg *clusterv1alpha1.Database) (
 	}
 
 	// We don't need to check the credentials source because we currently only
-	// support one source (MySQLConnectionSecret), which is required and
+	// support one source (MSSQLConnectionSecret), which is required and
 	// enforced by the ProviderConfig schema.
 	ref := pc.Spec.Credentials.ConnectionSecretRef
 	if ref == nil {

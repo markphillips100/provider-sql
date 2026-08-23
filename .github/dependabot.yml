@@ -1,0 +1,30 @@
+version: 2
+updates:
+- package-ecosystem: gomod
+  directories:
+    - "/"
+  schedule:
+    interval: monthly
+  commit-message:
+    prefix: "chore: "
+  ignore: # Handled via the crossplane-runtime, this should ensure we don't run into compatibility issues
+    - dependency-name: "github.com/crossplane/crossplane-tools"
+    - dependency-name: "sigs.k8s.io/*"
+    - dependency-name: "k8s.io/*"
+- package-ecosystem: docker
+  directory: "/cluster/images/provider-sql"
+  schedule:
+    interval: monthly
+  commit-message:
+    prefix: "chore: "
+- package-ecosystem: "github-actions"
+  directory: "/"
+  schedule:
+    interval: "monthly"
+  commit-message:
+    prefix: "chore: "
+  open-pull-requests-limit: 10
+  groups:
+    codeql-action:
+      patterns:
+        - "github/codeql-action*"

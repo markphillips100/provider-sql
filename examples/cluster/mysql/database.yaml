@@ -1,0 +1,10 @@
+apiVersion: mysql.sql.crossplane.io/v1alpha1
+kind: Database
+metadata:
+  name: example-db
+spec:
+  forProvider:
+    # Optional: set the default character set for the database
+    defaultCharacterSet: utf8mb4
+    # Optional: set the default collation for the database
+    defaultCollation: utf8mb4_bin
